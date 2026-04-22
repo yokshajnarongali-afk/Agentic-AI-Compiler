@@ -217,73 +217,151 @@ def load_hft_profile(profile_path: str = "configs/hft_profile.yaml") -> dict:
 # IR Encoder (unchanged from original — lightweight Autophase-style)
 # ---------------------------------------------------------------------------
 
-class SimpleIREncoder:
+class IR2VecEncoder:
     """
-    Encodes LLVM IR text into a fixed-size float vector.
-    Lightweight version — no deep learning overhead on the Boss Agent.
-    Full GNN version lives in src/encoder/ir_encoder.py.
+    IR2Vec-inspired IR encoder.
+    Encodes LLVM IR into a 64-dimensional float vector capturing:
+      - Instruction frequency histogram (35 types, normalised)
+      - Structural features: loop depth estimate, branch density,
+        call-graph density, memory access ratio (10 features)
+      - HFT-specific signals: hot-root presence, annotation flags,
+        arithmetic intensity, load/store ratio (10 features)
+      - Function-level statistics (9 features)
+
+    Total: 64 dimensions (much richer than original 35-feature version).
+    Cosine similarity on these vectors gives better memory retrieval.
+
+    Compared to full IR2Vec (which uses flow analysis + GNN):
+      - No GNN required — static feature extraction only
+      - Still captures loop structure, branch topology, memory behaviour
+      - Fast: <1ms for typical HFT IR files
     """
 
-    DIM = 256
+    DIM = 64
 
     INSTRUCTION_TYPES = [
         "alloca", "load", "store", "add", "sub", "mul", "sdiv", "udiv",
         "fadd", "fsub", "fmul", "fdiv", "icmp", "fcmp", "br", "ret",
         "call", "phi", "select", "getelementptr", "bitcast", "zext",
         "sext", "trunc", "and", "or", "xor", "shl", "lshr", "ashr",
-        "switch", "invoke", "unreachable", "extractvalue", "insertvalue",
-    ]
+        "switch", "invoke",
+    ]  # 34 types → indices 0-33
+
+    HOT_ROOTS = {
+        "on_market_data", "on_tick", "on_quote", "on_trade",
+        "evaluate_signal", "check_risk", "submit_order",
+        "dispatch_order", "handle_tick", "poll_feed",
+    }
 
     def encode(self, ir_text: str) -> np.ndarray:
         vec   = np.zeros(self.DIM, dtype=np.float32)
-        lines = ir_text.lower().split("\n")
+        lines = ir_text.split("\n")
+        lower = ir_text.lower()
         total = max(len(lines), 1)
+        n_def = max(ir_text.count("define "), 1)
 
+        # ── Dims 0-33: Instruction frequency (normalised) ──────────────
         for i, instr in enumerate(self.INSTRUCTION_TYPES):
-            vec[i] = sum(1 for l in lines if instr in l) / total
+            vec[i] = lower.count(instr) / total
 
-        vec[35] = ir_text.count("define ")  / 100.0
-        vec[36] = ir_text.count("declare ") / 100.0
-        vec[37] = total                     / 1000.0
-        vec[38] = ir_text.count("phi")      / max(ir_text.count("define "), 1)
-        vec[39] = ir_text.count("call")     / total
-        vec[40] = ir_text.count("br")       / total
-        vec[41] = ir_text.count("loop")     / total
-        vec[42] = ir_text.count("ptr")      / total
-        vec[43] = ir_text.count("global")   / 100.0
-        vec[44] = ir_text.count("metadata") / 100.0
+        # ── Dims 34-43: Structural features ───────────────────────────
+        br_count   = lower.count("\nbr ")
+        mem_ops    = lower.count(" load ") + lower.count(" store ")
+        call_count = lower.count("\n  call ")
+        phi_count  = lower.count(" phi ")
+
+        # Loop depth estimate: phi nodes are created at loop headers
+        # More phi nodes per function → deeper loop nesting
+        vec[34] = min(1.0, phi_count / max(n_def, 1) / 5.0)   # loop depth
+        vec[35] = min(1.0, br_count / total * 5.0)             # branch density
+        vec[36] = min(1.0, call_count / total * 10.0)          # call density
+        vec[37] = min(1.0, mem_ops / total * 3.0)              # memory op ratio
+        # Memory access pattern: load/store balance
+        n_load  = lower.count(" load ")
+        n_store = lower.count(" store ")
+        vec[38] = n_load / max(n_load + n_store, 1)            # load ratio
+        # Arithmetic intensity: math ops per memory op
+        arith = (lower.count(" add ") + lower.count(" mul ") +
+                 lower.count(" fadd") + lower.count(" fmul"))
+        vec[39] = min(1.0, arith / max(mem_ops, 1) / 5.0)     # arithmetic intensity
+        vec[40] = ir_text.count("define ") / 20.0             # function count
+        vec[41] = ir_text.count("declare ") / 20.0            # extern calls
+        # Vectorisation potential: phi + fadd/fmul in same function → vectorisable
+        vec[42] = min(1.0, (phi_count + lower.count("fmul")) / total * 5.0)
+        vec[43] = min(1.0, total / 500.0)                      # IR size
+
+        # ── Dims 44-53: HFT-specific signals ──────────────────────────
+        vec[44] = 1.0 if "[[hft::hot]]" in ir_text else 0.0   # hot annotation
+        vec[45] = 1.0 if "[[hft::cold]]" in ir_text else 0.0  # cold annotation
+        # Hot root presence in function names
+        n_hot_roots = sum(
+            1 for root in self.HOT_ROOTS
+            if f"@{root}" in lower or f"_{root}" in lower
+        )
+        vec[46] = min(1.0, n_hot_roots / 5.0)                 # hot root density
+        # Anti-pattern signals
+        vec[47] = min(1.0, lower.count(" alloca ") / 10.0)    # heap alloc signal
+        vec[48] = min(1.0, lower.count("virtual")  / 5.0)     # vtable signal
+        vec[49] = min(1.0, lower.count("invoke ")  / 5.0)     # exception signal
+        vec[50] = min(1.0, lower.count("@printf")  / 3.0)     # syscall signal
+        vec[51] = min(1.0, lower.count("atomic")   / 5.0)     # atomic signal
+        # Register pressure (more alloca → worse register use)
+        vec[52] = min(1.0, lower.count(" alloca ") / max(n_def, 1) / 3.0)
+        # Inlining opportunity (small functions are inlineable)
+        vec[53] = min(1.0, 1.0 / max(total / n_def, 1.0) * 10.0)
+
+        # ── Dims 54-63: Function statistics ───────────────────────────
+        instr_per_fn = total / n_def
+        vec[54] = min(1.0, instr_per_fn / 50.0)   # avg function size
+        vec[55] = min(1.0, n_def / 10.0)           # num functions
+        vec[56] = lower.count("noexcept") / max(n_def, 1)  # noexcept ratio
+        vec[57] = lower.count("always_inline") / max(n_def, 1)
+        vec[58] = lower.count(" ret ") / max(n_def, 1)     # return count
+        # BB density (basic block heuristic)
+        n_labels = sum(1 for l in lines if l.strip().endswith(":")
+                       and not l.strip().startswith(";"))
+        vec[59] = min(1.0, n_labels / max(total, 1) * 5.0)
+        vec[60] = min(1.0, lower.count("select ") / total * 5.0)  # branchless ops
+        vec[61] = min(1.0, lower.count("getelementptr") / total * 3.0)
+        vec[62] = min(1.0, lower.count("vector") / total * 10.0)  # simd hints
+        vec[63] = min(1.0, lower.count("metadata") / total * 5.0)
 
         return vec
+
+
+# Keep SimpleIREncoder as alias for backward compatibility
+SimpleIREncoder = IR2VecEncoder
 
 
 # ---------------------------------------------------------------------------
 # Path Classifier — the new core of the HFT Boss Agent
 # ---------------------------------------------------------------------------
 
-class PathClassifier:
+class HotnessScorer:
     """
-    Classifies each code unit as HOT or COLD.
+    Scores each code unit on a 0–100 hotness scale.
+    This replaces the binary HOT/COLD PathClassifier.
 
-    Two modes, applied in order:
-      1. Annotation-driven  : reads [[hft::hot]] / [[hft::cold]] attributes
-      2. Inference-driven   : static call graph traversal from known hot roots
+    Scoring rules (additive):
+      [[hft::hot]] annotation         → 100 (override)
+      [[hft::cold]] annotation        → 0   (override)
+      Direct hot root match           → 80 base
+      Segment keyword in name         → 70 base
+      Partial hot root match          → 60 base
+      Loop depth estimate             → +5 per estimated nesting level
+      Branch density signal           → +10 if snippet has nested branches
+      Heap/syscall anti-pattern found → +5 (more optimisation opportunity)
+      Known cold root match           → 0 (hard cold)
 
-    Known hot roots — functions that are always hot entry points:
-      - on_market_data, on_tick, on_quote, on_trade
-      - on_order_update, on_execution_report
-      - event_loop, poll_feed, process_message
-
-    Known cold roots — functions that are always cold:
-      - on_connect, on_disconnect, on_session_*
-      - load_config, init_*, shutdown_*, cleanup_*
-      - log_*, audit_*, persist_*
+    Score → PathLabel mapping:
+      >= 60  → HOT
+      1–59   → HOT (conservative — treat unknown as hot)
+      0      → COLD
     """
 
-    # Annotation patterns
     HOT_ANNOTATION  = re.compile(r'\[\[hft::hot\]\]')
     COLD_ANNOTATION = re.compile(r'\[\[hft::cold\]\]')
 
-    # Known entry point roots
     HOT_ROOTS = {
         "on_market_data", "on_tick", "on_quote", "on_trade",
         "on_order_update", "on_execution_report",
@@ -299,91 +377,162 @@ class PathClassifier:
         "reconnect", "handle_error", "on_reject",
     }
 
-    # Hot path segment tags — used for budget assignment
     SEGMENT_TAGS = {
-        "parse":      "market_data_parse",
-        "feed":       "market_data_parse",
-        "tick":       "market_data_parse",
-        "signal":     "signal_eval",
-        "alpha":      "signal_eval",
-        "strategy":   "signal_eval",
-        "risk":       "risk_check",
-        "limit":      "risk_check",
-        "position":   "risk_check",
-        "order":      "order_serialise",
-        "submit":     "order_serialise",
-        "send":       "order_serialise",
-        "dispatch":   "order_serialise",
+        "parse":    "market_data_parse",
+        "feed":     "market_data_parse",
+        "tick":     "market_data_parse",
+        "signal":   "signal_eval",
+        "alpha":    "signal_eval",
+        "strategy": "signal_eval",
+        "risk":     "risk_check",
+        "limit":    "risk_check",
+        "position": "risk_check",
+        "order":    "order_serialise",
+        "submit":   "order_serialise",
+        "send":     "order_serialise",
+        "dispatch": "order_serialise",
     }
 
-    def classify(self, unit_name: str, source_snippet: str) -> tuple[PathLabel, str]:
-        """
-        Returns (PathLabel, unit_tag).
-        unit_tag is the hot path segment name for budget mapping.
-        """
-        # --- Mode 1: annotation-driven ---
-        if self.HOT_ANNOTATION.search(source_snippet):
-            return PathLabel.HOT, self._infer_tag(unit_name)
-        if self.COLD_ANNOTATION.search(source_snippet):
-            return PathLabel.COLD, "cold"
+    HOT_SIGNALS   = re.compile(r'for\s*\(|while\s*\(|do\s*\{')
+    BRANCH_SIGNALS = re.compile(r'if\s*\(.*\).*else\s+if|switch\s*\(')
+    AP_SIGNALS    = re.compile(r'\bnew\b|\bmalloc\b|\bprintf\b|\bstd::mutex\b')
 
-        # --- Mode 2: inference-driven ---
+    def score(self, unit_name: str, source_snippet: str) -> dict:
+        """
+        Returns a dict with:
+          score    : int 0–100
+          label    : PathLabel
+          tag      : str (budget segment)
+          reasons  : list[str] (human-readable factors)
+        """
         name_lower = unit_name.lower()
+        reasons    = []
+        base_score = 0
 
-        # Direct root match
-        if name_lower in self.HOT_ROOTS:
-            return PathLabel.HOT, self._infer_tag(unit_name)
+        # ── Hard overrides from annotations ──────────────────────────
+        if self.HOT_ANNOTATION.search(source_snippet):
+            return {
+                "score":   100,
+                "label":   PathLabel.HOT,
+                "tag":     self._infer_tag(unit_name),
+                "reasons": ["[[hft::hot]] annotation explicitly marks this as a hot-path function"],
+            }
+        if self.COLD_ANNOTATION.search(source_snippet):
+            return {
+                "score":   0,
+                "label":   PathLabel.COLD,
+                "tag":     "cold",
+                "reasons": ["[[hft::cold]] annotation explicitly marks this as cold-path/setup code"],
+            }
+
+        # ── Known cold root → hard cold ───────────────────────────────
         if name_lower in self.COLD_ROOTS:
-            return PathLabel.COLD, "cold"
+            return {
+                "score":   0,
+                "label":   PathLabel.COLD,
+                "tag":     "cold",
+                "reasons": [f"Function name '{unit_name}' matches known cold/setup pattern"],
+            }
+        for cold in self.COLD_ROOTS:
+            if cold in name_lower:
+                return {
+                    "score":   0,
+                    "label":   PathLabel.COLD,
+                    "tag":     "cold",
+                    "reasons": [f"Name contains cold indicator '{cold}'"],
+                }
 
-        # Partial name match against root sets
-        for root in self.HOT_ROOTS:
-            if root in name_lower or name_lower in root:
-                return PathLabel.HOT, self._infer_tag(unit_name)
-        for root in self.COLD_ROOTS:
-            if root in name_lower or name_lower in root:
-                return PathLabel.COLD, "cold"
+        # ── Direct hot root match ─────────────────────────────────────
+        if name_lower in self.HOT_ROOTS:
+            base_score = 80
+            reasons.append(f"Function name '{unit_name}' matches known HFT hot-path entry point")
+        else:
+            # Partial hot root match
+            matched_root = None
+            for root in self.HOT_ROOTS:
+                if root in name_lower or name_lower in root:
+                    matched_root = root
+                    break
+            if matched_root:
+                base_score = 60
+                reasons.append(f"Name partially matches hot-path root '{matched_root}'")
+            else:
+                # Segment keyword match
+                for kw, tag in self.SEGMENT_TAGS.items():
+                    if kw in name_lower:
+                        base_score = 70
+                        reasons.append(f"Name contains hot-path keyword '{kw}' (segment: {tag})")
+                        break
 
-        # Segment keyword match in snippet
-        for keyword, tag in self.SEGMENT_TAGS.items():
-            if keyword in name_lower:
-                return PathLabel.HOT, tag
+        if base_score == 0:
+            # Unknown — conservative: treat as HOT with lower score
+            base_score = 40
+            reasons.append("Unknown function pattern — conservatively treated as HOT")
 
-        # Conservative fallback: unknown → treat as HOT
-        return PathLabel.UNKNOWN, self._infer_tag(unit_name)
+        # ── Additive signals ──────────────────────────────────────────
+        if self.HOT_SIGNALS.search(source_snippet):
+            loop_count = len(self.HOT_SIGNALS.findall(source_snippet))
+            bonus = min(20, loop_count * 5)
+            base_score += bonus
+            reasons.append(f"Estimated {loop_count} loop(s) detected → +{bonus} (loop depth signal)")
+
+        if self.BRANCH_SIGNALS.search(source_snippet):
+            base_score += 10
+            reasons.append("Branch-heavy control flow detected → +10 (LAP-010 candidate)")
+
+        if self.AP_SIGNALS.search(source_snippet):
+            base_score += 5
+            reasons.append("Anti-pattern signals detected → +5 (optimisation opportunity)")
+
+        score = min(99, max(1, base_score))  # HOT: 1–99
+        label = PathLabel.HOT if score > 0 else PathLabel.UNKNOWN
+
+        return {
+            "score":   score,
+            "label":   label,
+            "tag":     self._infer_tag(unit_name),
+            "reasons": reasons,
+        }
 
     def _infer_tag(self, unit_name: str) -> str:
-        """Maps function name to a hot path segment tag for budget lookup."""
         name_lower = unit_name.lower()
         for keyword, tag in self.SEGMENT_TAGS.items():
             if keyword in name_lower:
                 return tag
-        return "signal_eval"   # default hot tag if segment unclear
+        return "signal_eval"
+
+    # Backward-compatibility shim — pipeline calls classify() in some paths
+    def classify(self, unit_name: str, source_snippet: str) -> tuple:
+        result = self.score(unit_name, source_snippet)
+        return result["label"], result["tag"]
 
     def classify_all(self,
-                     units: list[tuple[str, str]],
+                     units: list,
                      latency_budget: LatencyBudget,
                      hw_profile: HardwareProfile
-                     ) -> list[CodeUnitContext]:
-        """
-        Classifies a list of (unit_name, source_snippet) tuples.
-        Returns fully populated CodeUnitContext list, budget attached to hot units.
-        """
+                     ) -> list:
         contexts = []
         for unit_name, snippet in units:
-            label, tag = self.classify(unit_name, snippet)
-            budget     = latency_budget.budget_for(tag) if label == PathLabel.HOT else 0
-
+            result = self.score(unit_name, snippet)
+            label  = result["label"]
+            tag    = result["tag"]
+            budget = latency_budget.budget_for(tag) if label == PathLabel.HOT else 0
             ctx = CodeUnitContext(
-                unit_name       = unit_name,
-                source_snippet  = snippet,
-                path_label      = label,
-                unit_tag        = tag,
-                budget_ns       = budget,
-                hardware_profile= hw_profile,
+                unit_name        = unit_name,
+                source_snippet   = snippet,
+                path_label       = label,
+                unit_tag         = tag,
+                budget_ns        = budget,
+                hardware_profile = hw_profile,
             )
+            # Attach hotness info for explainability
+            ctx._hotness_info = result
             contexts.append(ctx)
         return contexts
+
+
+# Keep PathClassifier as alias for backward compatibility
+PathClassifier = HotnessScorer
 
 
 # ---------------------------------------------------------------------------
@@ -391,12 +540,17 @@ class PathClassifier:
 # ---------------------------------------------------------------------------
 
 class MemoryStub:
+    """Fallback when ExperienceStore is unavailable."""
     def query_similar(self, embedding: np.ndarray, top_k: int = 5) -> list:
         return []
 
     def store(self, embedding: np.ndarray, plan: CompilationPlan,
               reward: float, metadata: dict):
         pass
+
+
+# Hotness scores cache — populated by BossAgent, read by OptimisationExplainer
+_HOTNESS_CACHE: dict = {}
 
 
 # ---------------------------------------------------------------------------
@@ -433,11 +587,26 @@ class BossAgent:
 
         self.config       = load_config(config_path)
         self.boss_cfg     = self.config["agents"]["boss"]
-        self.encoder      = SimpleIREncoder()
-        self.memory       = MemoryStub()
-        self.classifier   = PathClassifier()
+        self.encoder      = IR2VecEncoder()     # upgraded: 64-dim IR2Vec-like
+        self.classifier   = HotnessScorer()    # upgraded: scored 0-100
         self.hft_profile  = load_hft_profile(profile_path)
-        self._log("Boss Agent (HFT Edition) initialized.")
+        self._hotness_info: dict = {}           # unit_name → hotness score dict
+
+        # Try to connect to ExperienceStore for memory-informed planning
+        self.memory = MemoryStub()
+        try:
+            import sys, os
+            _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if _root not in sys.path:
+                sys.path.insert(0, _root)
+            from memory.experience_store import ExperienceStore
+            self._exp_store = ExperienceStore(config=self.config)
+            self._log(f"Memory store connected ({self._exp_store.backend})")
+        except Exception as e:
+            self._exp_store = None
+            self._log(f"Memory store unavailable ({e}) — using stub")
+
+        self._log("Boss Agent (HFT Edition + IR2Vec + HotnessScorer) initialized.")
 
     # ------------------------------------------------------------------
     # Public API
@@ -461,13 +630,22 @@ class BossAgent:
             else:
                 self._log("No IR yet — will run Pre-IR Fixer first.")
 
-        # Step 2: query memory
+        # Step 2: query experience store for similar past compilations
         past = []
         if context.ir_embedding is not None:
-            past = self.memory.query_similar(
-                context.ir_embedding,
-                top_k=self.boss_cfg["top_k_memory"]
-            )
+            try:
+                if self._exp_store:
+                    past = self._exp_store.query_similar(
+                        context.ir_embedding,
+                        top_k=self.boss_cfg.get("top_k_memory", 5)
+                    )
+                else:
+                    past = self.memory.query_similar(
+                        context.ir_embedding,
+                        top_k=self.boss_cfg.get("top_k_memory", 5)
+                    )
+            except Exception:
+                past = []
             if past:
                 self._log(f"Memory hit: {len(past)} similar past compilations.")
 
@@ -588,11 +766,11 @@ class BossAgent:
 
     def _classify_units(self, context: CompilationContext) -> CompilationContext:
         """
-        Runs PathClassifier over context.code_units.
-        Builds HardwareProfile and LatencyBudget from loaded profile + context.
-        Populates context.code_units with fully labelled CodeUnitContext objects.
+        Runs HotnessScorer over context.code_units.
+        Each unit receives a hotness score 0-100 and a list of reasons.
+        HOT units get latency budgets; COLD units get general optimisation.
+        Hotness info is cached in self._hotness_info for the explainer.
         """
-        # Build HardwareProfile from hft_profile yaml + context
         hw = HardwareProfile(
             cpu            = self.hft_profile.get("hardware", {}).get("cpu", context.target_arch),
             nic            = self.hft_profile.get("hardware", {}).get("nic", "generic"),
@@ -603,7 +781,6 @@ class BossAgent:
             arch_string    = context.target_arch,
         )
 
-        # Build LatencyBudget from hft_profile yaml
         lb_cfg = self.hft_profile.get("latency_budget", {})
         lb = LatencyBudget(
             tick_to_order_ns      = lb_cfg.get("tick_to_order_ns",       2000),
@@ -617,21 +794,48 @@ class BossAgent:
         context.hardware_profile = hw
         context.latency_budget   = lb
 
-        # Classify each (unit_name, snippet) pair
-        raw_units = context.code_units  # expected: list of (str, str) tuples
-        if raw_units and isinstance(raw_units[0], tuple):
-            context.code_units = self.classifier.classify_all(raw_units, lb, hw)
-        # If code_units are already CodeUnitContext objects, leave them.
+        # Score each unit and assign budget
+        # Handles: (a) raw (name, snippet) tuples, (b) CodeUnitContext objects
+        if context.code_units and isinstance(context.code_units[0], tuple):
+            context.code_units = self.classifier.classify_all(context.code_units, lb, hw)
+        else:
+            # Units are already CodeUnitContext objects — score + assign budget
+            for u in context.code_units:
+                result = self.classifier.score(
+                    u.unit_name,
+                    u.source_snippet or ""
+                )
+                u.path_label = result["label"]
+                u.unit_tag   = result["tag"]
+                u.budget_ns  = (
+                    lb.budget_for(result["tag"])
+                    if result["label"] == PathLabel.HOT
+                    else 0
+                )
+                u._hotness_info = result
+
+        # Collect hotness info for explainability layer
+        self._hotness_info = {}
+        self._log("Classification complete (HotnessScorer):")
+        for u in context.code_units:
+            hi = getattr(u, '_hotness_info', {})
+            if not hi:
+                hi = self.classifier.score(u.unit_name, u.source_snippet or "")
+            self._hotness_info[u.unit_name] = hi
+            if u.path_label in (PathLabel.HOT, PathLabel.UNKNOWN):
+                self._log(f"  HOT  [{hi.get('score',0):3d}/100] → {u.unit_name} "
+                          f"[tag={u.unit_tag}, budget={u.budget_ns}ns]")
+                for r in hi.get('reasons', [])[:2]:
+                    self._log(f"              {r}")
+            else:
+                self._log(f"  COLD [  0/100] → {u.unit_name}")
+
+        # Update global cache for pipeline to read
+        _HOTNESS_CACHE.update(self._hotness_info)
 
         hot  = [u for u in context.code_units if u.path_label in (PathLabel.HOT, PathLabel.UNKNOWN)]
         cold = [u for u in context.code_units if u.path_label == PathLabel.COLD]
-
-        self._log(f"Classification complete: {len(hot)} HOT, {len(cold)} COLD units.")
-        for u in hot:
-            self._log(f"  HOT  → {u.unit_name} [tag={u.unit_tag}, budget={u.budget_ns}ns]")
-        for u in cold:
-            self._log(f"  COLD → {u.unit_name}")
-
+        self._log(f"  Total: {len(hot)} HOT, {len(cold)} COLD")
         return context
 
     # ------------------------------------------------------------------
@@ -660,7 +864,27 @@ class BossAgent:
                 plan.hw_tuner_budget  = past_plan.get("hw_tuner_budget", 10)
                 plan.based_on_memory  = True
                 plan.confidence       = best["reward"]
-                self._log("Memory-informed plan applied.")
+
+                # ── Reuse proven passes from similar past experience ────────
+                # If the best past experience applied specific passes that
+                # achieved a high reward, bias the IR Tuner toward them.
+                past_passes = best.get("passes_applied", [])
+                if past_passes:
+                    pass_list = ", ".join(past_passes[:8])  # top 8 passes
+                    src       = best.get("source_path", "previous run")
+                    lat_delta = best.get("latency_delta", 0)
+                    plan.ir_tuner_directive = (
+                        f"Memory hit: reusing proven strategy from '{src}' "
+                        f"(reward={best['reward']:.2f}, Δlat={lat_delta:.0f}ns). "
+                        f"Prioritise passes: {pass_list}."
+                    )
+                    self._log(
+                        f"Memory hit: reusing passes from '{src}' "
+                        f"(reward={best['reward']:.2f}) → {past_passes[:5]}"
+                    )
+                else:
+                    self._log("Memory-informed plan applied (no past passes to reuse).")
+
                 # Still apply HFT unit routing on top of memory plan
                 if context.hft_mode:
                     plan = self._apply_hft_routing(plan, context)

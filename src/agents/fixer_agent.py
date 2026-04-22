@@ -258,6 +258,21 @@ HFT_RULES = [
         "Use lookup tables instead of switch. "
         "Mark hot branches with __builtin_expect(condition, likely_value)."
     ),
+    (
+        "LAP-011",
+        Severity.CRITICAL,
+        "Coroutine suspension on hot path",
+        [
+            r'\bco_await\b',
+            r'\bco_yield\b',
+            r'\bco_return\b',
+            r'\bstd::coroutine_handle\b',
+        ],
+        "C++20 coroutine suspension transfers control to the scheduler — each "
+        "suspension point adds µs-level latency and heap-allocates a coroutine frame.",
+        "Avoid co_await and co_yield in hot-path functions entirely. "
+        "Use synchronous callbacks, state machines, or polling loops instead."
+    ),
 ]
 
 

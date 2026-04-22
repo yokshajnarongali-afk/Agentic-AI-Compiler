@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AGentic_C — HFT Compiler Dashboard</title>
+  <meta name="description" content="Enterprise HFT Compiler Dashboard powered by AGentic_C — agentic AI-driven LLVM optimisation.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- ALL CSS INLINED — no external stylesheet = no browser caching issue -->
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #FFFFFF; --bg-soft: #F8F9FA; --card: #FFFFFF; --card-border: #E8EAED;
+      --accent: #4F46E5; --accent-hover: #4338CA; --accent-light: rgba(79,70,229,0.08); --accent-ring: rgba(79,70,229,0.18);
+      --hot: #DC2626; --cold: #0284C7; --green: #16A34A; --gold: #D97706; --red: #DC2626; --warn: #EA580C;
+      --text: #111827; --text2: #374151; --text3: #6B7280; --text4: #9CA3AF;
+      --font: 'Inter', system-ui, sans-serif; --mono: 'JetBrains Mono', monospace;
+      --r: 8px; --r-lg: 12px; --r-xl: 16px;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+      --shadow: 0 1px 4px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.05);
+      --shadow-md: 0 2px 8px rgba(0,0,0,0.08), 0 8px 24px rgba(0,0,0,0.05);
+      --ring: 0 0 0 3px var(--accent-ring);
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: var(--font); background: #FFFFFF !important; color: var(--text); min-height: 100vh; overflow-x: hidden; -webkit-font-smoothing: antialiased; }
+    .container { max-width: 1280px; margin: 0 auto; padding: 0 28px; }
+    .section { padding: 32px 0; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 920px) { .two-col { grid-template-columns: 1fr; } }
+    /* Header */
+    .header { position: sticky; top: 0; z-index: 200; background: #FFFFFF !important; border-bottom: 1px solid var(--card-border); box-shadow: 0 1px 0 rgba(0,0,0,0.05); }
+    .header-inner { max-width: 1280px; margin: 0 auto; padding: 13px 28px; display: flex; align-items: center; gap: 14px; }
+    .logo { display: flex; align-items: center; gap: 11px; flex-shrink: 0; }
+    .logo-icon { width: 38px; height: 38px; border-radius: 10px; background: linear-gradient(135deg,#4F46E5,#818CF8); display: flex; align-items: center; justify-content: center; font-size: 18px; box-shadow: 0 2px 8px rgba(79,70,229,0.28); flex-shrink: 0; }
+    .logo-name { font-size: 18px; font-weight: 800; letter-spacing: -0.4px; color: var(--text); display: flex; align-items: center; }
+    .logo-accent { color: var(--accent); }
+    .logo-badge { display: inline-block; padding: 2px 7px; border-radius: 20px; font-size: 10px; font-weight: 700; background: var(--accent-light); color: var(--accent); border: 1px solid rgba(79,70,229,0.18); margin-left: 8px; vertical-align: middle; }
+    .logo-sub { display: block; font-size: 10px; color: var(--text3); font-weight: 500; letter-spacing: 0.7px; text-transform: uppercase; margin-top: 2px; }
+    .header-status { margin-left: auto; display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text2); font-weight: 500; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text4); flex-shrink: 0; transition: background 0.3s; }
+    .status-dot.running { background: var(--gold); animation: pulse 1.2s ease infinite; }
+    .status-dot.done    { background: var(--green); }
+    .status-dot.error   { background: var(--red); }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    .btn-refresh { padding: 8px 18px; border-radius: var(--r); border: none; background: var(--accent); color: #FFFFFF; font-size: 13px; font-weight: 600; cursor: pointer; font-family: var(--font); box-shadow: 0 1px 4px rgba(79,70,229,0.25); transition: background 0.18s, box-shadow 0.18s, transform 0.14s; flex-shrink: 0; display: flex; align-items: center; gap: 6px; }
+    .btn-refresh:hover { background: var(--accent-hover); box-shadow: 0 4px 12px rgba(79,70,229,0.32); transform: translateY(-1px); }
+    /* Section title */
+    .section-title { font-size: 21px; font-weight: 700; letter-spacing: -0.3px; color: var(--text); margin-bottom: 18px; }
+    .accent { color: var(--accent); }
+    /* Card */
+    .card { background: #FFFFFF; border: 1px solid var(--card-border); border-radius: var(--r-lg); padding: 22px 24px; box-shadow: var(--shadow-sm); transition: box-shadow 0.2s, border-color 0.2s; }
+    .card:hover { box-shadow: var(--shadow); border-color: rgba(79,70,229,0.2); }
+    .card-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text3); margin-bottom: 18px; }
+    /* Pipeline */
+    .pipeline-section { background: #FFFFFF; border-bottom: 1px solid var(--card-border); padding: 32px 0 24px; }
+    .pipeline-flow { display: flex; align-items: center; justify-content: center; gap: 6px; flex-wrap: wrap; padding: 20px 22px; background: var(--bg-soft); border-radius: var(--r-lg); border: 1px solid var(--card-border); }
+    .pipeline-stage { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 13px 18px; border-radius: var(--r); background: #FFFFFF; border: 1px solid var(--card-border); min-width: 96px; box-shadow: var(--shadow-sm); transition: all 0.2s; cursor: default; }
+    .pipeline-stage:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow), var(--ring); }
+    .hot-stage { border-color: rgba(220,38,38,0.2); }
+    .hot-stage:hover { border-color: var(--hot); box-shadow: var(--shadow), 0 0 0 3px rgba(220,38,38,0.14); }
+    .stage-icon { font-size: 20px; } .stage-label { font-size: 11px; font-weight: 700; text-align: center; color: var(--text); } .stage-sub { font-size: 10px; color: var(--text3); text-align: center; }
+    .pipeline-arrow { color: var(--text4); font-size: 14px; flex-shrink: 0; }
+    .pipeline-source { text-align: center; margin-top: 10px; font-family: var(--mono); font-size: 11px; color: var(--accent); }
+    /* Metrics */
+    .metrics-section { padding: 22px 0; }
+    .metrics-grid { display: grid; grid-template-columns: repeat(6,1fr); gap: 14px; }
+    @media (max-width:1100px){.metrics-grid{grid-template-columns:repeat(3,1fr)}} @media (max-width:600px){.metrics-grid{grid-template-columns:repeat(2,1fr)}}
+    .metric-card { background: #FFFFFF; border: 1px solid var(--card-border); border-radius: var(--r); padding: 16px 14px; display: flex; align-items: center; gap: 11px; box-shadow: var(--shadow-sm); transition: all 0.2s; }
+    .metric-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); border-color: rgba(79,70,229,0.2); }
+    .accent-card { border-top: 3px solid var(--accent); } .green-card { border-top: 3px solid var(--green); } .gold-card { border-top: 3px solid var(--gold); }
+    .metric-icon { font-size: 20px; flex-shrink: 0; }
+    .metric-value { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; color: var(--text); }
+    .metric-label { font-size: 10px; color: var(--text3); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+    /* Table */
+    .table-wrapper { overflow-x: auto; }
+    .fn-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .fn-table th { padding: 9px 12px; text-align: left; color: var(--text3); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; border-bottom: 1px solid var(--card-border); background: var(--bg-soft); }
+    .fn-table td { padding: 11px 12px; border-bottom: 1px solid var(--card-border); vertical-align: middle; color: var(--text); background: #FFFFFF; }
+    .fn-table tr:last-child td { border-bottom: none; } .fn-table tr:hover td { background: #FAFBFF; }
+    .table-empty { text-align: center; color: var(--text3); padding: 36px; font-size: 13px; }
+    .label-badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 20px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; }
+    .label-hot  { background: rgba(220,38,38,0.08); color: var(--hot); border: 1px solid rgba(220,38,38,0.2); }
+    .label-cold { background: rgba(2,132,199,0.08); color: var(--cold); border: 1px solid rgba(2,132,199,0.2); }
+    .score-bar-wrap { display: flex; align-items: center; gap: 8px; }
+    .score-bar { width: 50px; height: 4px; background: var(--card-border); border-radius: 2px; overflow: hidden; }
+    .score-bar-fill { height: 100%; background: linear-gradient(90deg,var(--accent),#818CF8); border-radius: 2px; transition: width 0.8s ease; }
+    .verdict-pass { color: var(--green); font-weight: 700; } .verdict-fail { color: var(--red); font-weight: 700; } .verdict-adv { color: var(--text3); font-weight: 500; }
+    /* Chart */
+    .chart-wrapper { min-height: 160px; } .chart-empty { display: flex; align-items: center; justify-content: center; height: 160px; color: var(--text3); font-size: 13px; }
+    .chart-bars { display: flex; flex-direction: column; gap: 18px; }
+    .chart-bar-label { font-size: 12px; color: var(--text2); margin-bottom: 5px; font-family: var(--mono); font-weight: 500; }
+    .chart-bar-row { display: flex; align-items: center; gap: 10px; }
+    .chart-bar-track { flex: 1; height: 9px; background: var(--bg-soft); border-radius: 5px; overflow: hidden; border: 1px solid var(--card-border); }
+    .chart-bar-fill { height: 100%; border-radius: 5px; transition: width 1s cubic-bezier(0.34,1.56,0.64,1); }
+    .bar-before { background: #CBD5E1; } .bar-after { background: linear-gradient(90deg,#4F46E5,#818CF8); } .bar-o3 { background: rgba(217,119,6,0.5); }
+    .chart-bar-val { font-size: 11px; color: var(--text3); font-family: var(--mono); min-width: 50px; text-align: right; }
+    .chart-legend { display: flex; gap: 16px; margin-top: 16px; flex-wrap: wrap; }
+    .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text3); font-weight: 500; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+    .before-dot { background: #CBD5E1; } .after-dot { background: var(--accent); } .o3-dot { background: rgba(217,119,6,0.5); }
+    /* Anti-patterns */
+    .ap-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(270px,1fr)); gap: 12px; }
+    .ap-empty { color: var(--green); font-weight: 600; font-size: 13px; text-align: center; padding: 36px; grid-column: 1/-1; }
+    .ap-card { background: #FFFFFF; border: 1px solid var(--card-border); border-radius: var(--r); padding: 15px 17px; border-left: 4px solid transparent; transition: transform 0.18s, box-shadow 0.18s; }
+    .ap-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+    .ap-card.sev-critical { border-left-color: var(--red); background: #FFFAFA; } .ap-card.sev-major { border-left-color: var(--warn); background: #FFFDF7; } .ap-card.sev-minor { border-left-color: var(--cold); background: #F7FBFF; }
+    .ap-header { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+    .ap-code { font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--accent); } .ap-name { font-size: 13px; font-weight: 600; color: var(--text); }
+    .ap-sev-badge { margin-left: auto; padding: 2px 7px; border-radius: 12px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; }
+    .sev-badge-critical { background: rgba(220,38,38,0.08); color: var(--red); } .sev-badge-major { background: rgba(249,115,22,0.08); color: var(--warn); } .sev-badge-minor { background: rgba(2,132,199,0.08); color: var(--cold); }
+    .ap-desc { font-size: 12px; color: var(--text2); margin-bottom: 7px; line-height: 1.6; } .ap-fix-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text4); margin-bottom: 3px; font-weight: 700; } .ap-fix { font-size: 12px; color: var(--green); line-height: 1.5; font-weight: 500; } .ap-func { font-size: 11px; color: var(--text4); margin-top: 7px; font-family: var(--mono); }
+    /* Pass Timeline */
+    .pass-timeline { max-height: 340px; overflow-y: auto; } .timeline-empty { color: var(--text3); text-align: center; padding: 36px 0; font-size: 13px; }
+    .timeline-group { margin-bottom: 18px; } .timeline-fn { font-size: 12px; color: var(--accent); font-family: var(--mono); font-weight: 700; margin-bottom: 8px; }
+    .timeline-item { display: flex; align-items: flex-start; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--card-border); }
+    .timeline-item:last-child { border-bottom: none; } .timeline-idx { font-size: 10px; color: var(--text4); font-family: var(--mono); min-width: 22px; padding-top: 2px; }
+    .timeline-pass { font-family: var(--mono); font-size: 12px; color: var(--text); font-weight: 600; } .timeline-desc { font-size: 11px; color: var(--text3); line-height: 1.4; margin-top: 2px; }
+    /* Reward */
+    .reward-bars { display: flex; flex-direction: column; gap: 14px; } .reward-empty { color: var(--text3); text-align: center; padding: 32px 0; font-size: 13px; }
+    .reward-row-header { display: flex; justify-content: space-between; margin-bottom: 5px; } .reward-row-name { font-size: 12px; color: var(--text2); font-weight: 500; } .reward-row-val { font-size: 12px; font-family: var(--mono); font-weight: 600; color: var(--text); }
+    .reward-bar-track { height: 7px; background: var(--bg-soft); border-radius: 4px; overflow: hidden; border: 1px solid var(--card-border); }
+    .reward-bar-fill { height: 100%; border-radius: 4px; transition: width 1.2s cubic-bezier(0.34,1.56,0.64,1); }
+    .rbar-lat { background: linear-gradient(90deg,var(--accent),#818CF8); } .rbar-instr { background: linear-gradient(90deg,var(--cold),#7dd3fc); } .rbar-ap { background: linear-gradient(90deg,var(--green),#86efac); } .rbar-ret { background: linear-gradient(90deg,var(--red),var(--warn)); } .rbar-stab { background: linear-gradient(90deg,var(--gold),#fde68a); }
+    .reward-formula { margin-top: 16px; padding: 11px 14px; background: var(--bg-soft); border-radius: var(--r); border: 1px solid var(--card-border); }
+    .reward-formula code { font-family: var(--mono); font-size: 11px; color: var(--text3); }
+    /* Benchmark */
+    .benchmark-grid { display: grid; grid-template-columns: 1fr auto 1fr; gap: 20px; align-items: start; }
+    @media (max-width:750px){.benchmark-grid{grid-template-columns:1fr}.bench-vs{display:none}}
+    .bench-col { background: #FFFFFF; border: 1px solid var(--card-border); border-radius: var(--r-lg); padding: 18px; box-shadow: var(--shadow-sm); }
+    .bench-agentic { border-color: rgba(79,70,229,0.25); background: #FAFBFF; }
+    .bench-header { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 15px; font-weight: 700; color: var(--text); }
+    .bench-vs { display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; color: var(--text4); padding-top: 52px; }
+    .bench-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--card-border); font-size: 13px; }
+    .bench-row:last-child { border-bottom: none; } .bench-row-label { color: var(--text3); font-size: 12px; } .bench-row-val { font-weight: 600; font-family: var(--mono); color: var(--text); }
+    .val-yes { color: var(--green); } .val-no { color: var(--red); } .val-ns { color: var(--accent); }
+    .bench-result { margin-top: 18px; text-align: center; font-size: 22px; font-weight: 800; color: var(--green); display: none; }
+    .bench-result.visible { display: block; } .bench-sub { font-size: 13px; color: var(--text3); font-weight: 400; margin-top: 4px; }
+    /* Explainability */
+    .explain-panel { background: #FFFFFF; border: 1px solid var(--card-border); border-radius: var(--r-lg); padding: 24px; box-shadow: var(--shadow-sm); }
+    .explain-empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 40px; color: var(--text3); text-align: center; }
+    .explain-empty-icon { font-size: 34px; }
+    .explain-cmd { display: block; margin-top: 6px; padding: 9px 14px; background: var(--bg-soft); border-radius: var(--r); font-family: var(--mono); font-size: 11px; color: var(--accent); border: 1px solid var(--card-border); }
+    .explain-cards { display: flex; flex-direction: column; gap: 16px; }
+    .explain-card { border: 1px solid var(--card-border); border-radius: var(--r); padding: 16px; background: var(--bg-soft); }
+    .explain-card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; } .explain-fn-name { font-family: var(--mono); font-weight: 700; font-size: 13px; color: var(--text); }
+    .explain-summary { font-size: 13px; color: var(--text2); line-height: 1.6; margin-bottom: 12px; }
+    .explain-sub-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text4); margin-bottom: 7px; font-weight: 700; }
+    .explain-reasons { display: flex; flex-wrap: wrap; gap: 6px; }
+    .explain-reason-tag { padding: 3px 9px; background: var(--accent-light); border: 1px solid rgba(79,70,229,0.18); border-radius: 20px; font-size: 11px; color: var(--accent); font-weight: 500; }
+    /* Footer */
+    .footer { background: #FFFFFF; border-top: 1px solid var(--card-border); padding: 18px 0; }
+    .footer-inner { display: flex; align-items: center; gap: 14px; } .footer-logo { font-weight: 800; font-size: 13px; color: var(--accent); } .footer-info { color: var(--text4); font-size: 12px; } .footer-refresh { margin-left: auto; font-size: 11px; color: var(--text4); font-family: var(--mono); }
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 5px; height: 5px; } ::-webkit-scrollbar-track { background: var(--bg-soft); } ::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 3px; }
+    /* Animations */
+    @keyframes slideIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+    @keyframes fadeIn  { from{opacity:0} to{opacity:1} }
+    /* Utilities */
+    .mono { font-family: var(--mono); } .text-green { color: var(--green); } .text-red { color: var(--red); } .text-gold { color: var(--gold); } .text-accent { color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────────────────── -->
+<header class="header">
+  <div class="header-inner">
+    <div class="logo">
+      <div class="logo-icon">⚡</div>
+      <div>
+        <span class="logo-name">AGentic_<span class="logo-accent">C</span>
+          <span class="logo-badge">v2.0</span>
+        </span>
+        <span class="logo-sub">HFT Enterprise Compiler</span>
+      </div>
+    </div>
+
+    <div class="header-status">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Connecting…</span>
+    </div>
+
+    <button class="btn-refresh" id="btnRefresh" onclick="fetchResults()">⟳ Refresh</button>
+  </div>
+</header>
+
+<!-- ── Pipeline ────────────────────────────────────────────────────────── -->
+<section class="pipeline-section">
+  <div class="container">
+    <h2 class="section-title">Compilation <span class="accent">Pipeline</span></h2>
+    <div class="pipeline-flow">
+      <div class="pipeline-stage" id="stage-clang">
+        <span class="stage-icon">⚙️</span>
+        <span class="stage-label">Clang</span>
+        <span class="stage-sub">LLVM IR</span>
+      </div>
+      <span class="pipeline-arrow">→</span>
+      <div class="pipeline-stage" id="stage-boss">
+        <span class="stage-icon">🧠</span>
+        <span class="stage-label">Boss Agent</span>
+        <span class="stage-sub">HOT / COLD</span>
+      </div>
+      <span class="pipeline-arrow">→</span>
+      <div class="pipeline-stage hot-stage" id="stage-fixer">
+        <span class="stage-icon">🔍</span>
+        <span class="stage-label">Fixer Agent</span>
+        <span class="stage-sub">Anti-Patterns</span>
+      </div>
+      <span class="pipeline-arrow">→</span>
+      <div class="pipeline-stage" id="stage-irtuner">
+        <span class="stage-icon">🛠️</span>
+        <span class="stage-label">IR Tuner</span>
+        <span class="stage-sub">Phase Ordering</span>
+      </div>
+      <span class="pipeline-arrow">→</span>
+      <div class="pipeline-stage" id="stage-hwtuner">
+        <span class="stage-icon">⚡</span>
+        <span class="stage-label">HW Tuner</span>
+        <span class="stage-sub">SIMD / Vectorise</span>
+      </div>
+      <span class="pipeline-arrow">→</span>
+      <div class="pipeline-stage" id="stage-reward">
+        <span class="stage-icon">🎯</span>
+        <span class="stage-label">Reward</span>
+        <span class="stage-sub">Store Exp</span>
+      </div>
+    </div>
+    <p class="pipeline-source" id="pipelineSource"></p>
+  </div>
+</section>
+
+<!-- ── Metrics ─────────────────────────────────────────────────────────── -->
+<section class="metrics-section">
+  <div class="container">
+    <div class="metrics-grid">
+      <div class="metric-card accent-card">
+        <span class="metric-icon">⏱</span>
+        <div>
+          <div class="metric-value" id="metLatBefore">–</div>
+          <div class="metric-label">Avg Latency (Before)</div>
+        </div>
+      </div>
+      <div class="metric-card green-card">
+        <span class="metric-icon">✅</span>
+        <div>
+          <div class="metric-value" id="metLatAfter">–</div>
+          <div class="metric-label">Avg Latency (After)</div>
+        </div>
+      </div>
+      <div class="metric-card">
+        <span class="metric-icon">📈</span>
+        <div>
+          <div class="metric-value" id="metImprovement">–</div>
+          <div class="metric-label">Improvement</div>
+        </div>
+      </div>
+      <div class="metric-card gold-card">
+        <span class="metric-icon">🏆</span>
+        <div>
+          <div class="metric-value" id="metReward">–</div>
+          <div class="metric-label">Reward Score</div>
+        </div>
+      </div>
+      <div class="metric-card">
+        <span class="metric-icon">🔥</span>
+        <div>
+          <div class="metric-value" id="metHotUnits">–</div>
+          <div class="metric-label">HOT Units Passed</div>
+        </div>
+      </div>
+      <div class="metric-card">
+        <span class="metric-icon">🔄</span>
+        <div>
+          <div class="metric-value" id="metRetries">–</div>
+          <div class="metric-label">Total Retries</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Function Table + Latency Chart ─────────────────────────────────── -->
+<section class="section">
+  <div class="container">
+    <div class="two-col">
+
+      <!-- Function Classification -->
+      <div class="card">
+        <div class="card-title">Function Classification</div>
+        <div class="table-wrapper">
+          <table class="fn-table">
+            <thead>
+              <tr>
+                <th>Function</th>
+                <th>Path</th>
+                <th>Score</th>
+                <th>Latency Δ</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="fnTableBody">
+              <tr><td colspan="5" class="table-empty">Waiting for pipeline data…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Latency Chart -->
+      <div class="card">
+        <div class="card-title">Latency Comparison (HOT path)</div>
+        <div class="chart-wrapper" id="latencyChart">
+          <div class="chart-empty">Waiting for pipeline data…</div>
+        </div>
+        <div class="chart-legend">
+          <div class="legend-item"><div class="legend-dot before-dot"></div>Before</div>
+          <div class="legend-item"><div class="legend-dot after-dot"></div>AGentic_C</div>
+          <div class="legend-item"><div class="legend-dot o3-dot"></div>-O3</div>
+        </div>
+      </div>
+
+    </div><!-- /two-col -->
+  </div>
+</section>
+
+<!-- ── Anti-Patterns + Pass Timeline ──────────────────────────────────── -->
+<section class="section" style="padding-top:0">
+  <div class="container">
+    <div class="two-col">
+
+      <!-- Anti-Patterns -->
+      <div class="card">
+        <div class="card-title">Detected Anti-Patterns</div>
+        <div class="ap-grid" id="apGrid">
+          <div class="ap-empty">✓ No anti-patterns detected.</div>
+        </div>
+      </div>
+
+      <!-- Pass Timeline -->
+      <div class="card">
+        <div class="card-title">Agentic Pass Timeline</div>
+        <div class="pass-timeline" id="passTimeline">
+          <div class="timeline-empty">Waiting for pipeline data…</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── Reward Breakdown ────────────────────────────────────────────────── -->
+<section class="section" style="padding-top:0">
+  <div class="container">
+    <div class="card">
+      <div class="card-title">Reward Breakdown</div>
+      <div class="reward-bars" id="rewardBars">
+        <div class="reward-empty">No reward data yet.</div>
+      </div>
+      <div class="reward-formula">
+        <code>R = 0.50 × Latency + 0.20 × Instructions + 0.15 × AntiPatterns − 0.10 × Retries + 0.05 × Stability</code>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Benchmark ───────────────────────────────────────────────────────── -->
+<section class="section" style="padding-top:0">
+  <div class="container">
+    <div class="card">
+      <div class="card-title">AGentic_C vs clang -O3</div>
+      <div class="benchmark-grid">
+        <div class="bench-col bench-o3">
+          <div class="bench-header"><span class="bench-icon">⚙️</span>clang -O3</div>
+          <div id="benchO3"></div>
+        </div>
+        <div class="bench-vs">vs</div>
+        <div class="bench-col bench-agentic">
+          <div class="bench-header"><span class="bench-icon">⚡</span>AGentic_C</div>
+          <div id="benchAgentic"></div>
+        </div>
+      </div>
+      <div class="bench-result" id="benchResult"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Explainability ──────────────────────────────────────────────────── -->
+<section class="section" style="padding-top:0;padding-bottom:40px">
+  <div class="container">
+    <div class="explain-panel">
+      <div class="card-title" style="margin-bottom:20px">Explainability</div>
+      <div id="explainPanel">
+        <div class="explain-empty">
+          <div class="explain-empty-icon">🔍</div>
+          <div>Run the pipeline to see decisions explained</div>
+          <code class="explain-cmd">python src/pipeline.py examples/hft_strategy.cpp --web</code>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ─────────────────────────────────────────────────────────── -->
+<footer class="footer">
+  <div class="container footer-inner">
+    <span class="footer-logo">AGentic_C</span>
+    <span class="footer-info">Enterprise HFT Compiler Dashboard — data auto-refreshes every 5 s</span>
+    <span class="footer-refresh" id="lastUpdated"></span>
+  </div>
+</footer>
+
+<script src="app.js?v=3"></script>
+</body>
+</html>

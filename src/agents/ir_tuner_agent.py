@@ -537,6 +537,182 @@ class IRTunerResult:
 
 
 # ---------------------------------------------------------------------------
+# Phase-Order Optimiser — the AutoPhase-inspired core improvement
+# ---------------------------------------------------------------------------
+
+class PhaseOrderOptimiser:
+    """
+    Explores multiple LLVM pass sequences ("phase orders") and picks the one
+    that produces the lowest estimated latency.
+
+    This is the key idea from AutoPhase (ICLR 2020) and CompilerGym:
+    the ORDER in which passes are applied matters as much as the passes
+    themselves — a suboptimal phase order can leave instruction count
+    20-40% higher than the optimal order.
+
+    In a full RL system (MLGO/AlphaDev), a trained model selects the
+    sequence. Here we use 5 carefully chosen HFT-specific sequences
+    that represent different optimisation "strategies".
+
+    Sequences:
+      SEQ-1: Mem-first     — eliminate allocs, then canonicalise
+      SEQ-2: Inline-first  — inline everything, then clean up
+      SEQ-3: Loop-first    — vectorise and unroll, then simplify
+      SEQ-4: AP-targeted   — anti-pattern focused (from HFTPassSelector)
+      SEQ-5: Aggressive    — everything, DCE last
+
+    The sequence that produces the lowest LatencyCostModel estimate wins.
+    If budget is very tight (budget_steps <= 10), skip exploration and
+    go straight to SEQ-4 (fastest to compute).
+    """
+
+    SEQUENCES = [
+        (
+            "SEQ-1 Mem-First",
+            ["mem2reg", "sroa", "instcombine", "gvn", "dce",
+             "loop-unroll", "simplifycfg", "aggressive-instcombine"],
+        ),
+        (
+            "SEQ-2 Inline-First",
+            ["-inline", "always-inline", "instcombine", "gvn",
+             "licm", "simplifycfg", "dce", "mem2reg"],
+        ),
+        (
+            "SEQ-3 Loop-First",
+            ["licm", "loop-unroll", "loop-vectorize", "slp-vectorizer",
+             "dce", "instcombine", "simplifycfg", "gvn"],
+        ),
+        (
+            "SEQ-4 Balanced (AutoPhase-inspired)",
+            ["mem2reg", "-inline", "licm", "gvn",
+             "loop-unroll", "dce", "simplifycfg", "instcombine"],
+        ),
+        (
+            "SEQ-5 Aggressive",
+            ["sroa", "mem2reg", "-inline", "always-inline", "licm",
+             "gvn", "loop-unroll", "loop-vectorize", "instcombine",
+             "aggressive-instcombine", "simplifycfg", "dce",
+             "jump-threading", "reassociate", "sccp"],
+        ),
+    ]
+
+    def pick_best_sequence(self,
+                           env: "CompilerGymEnv",
+                           cost_model: "LatencyCostModel",
+                           anti_patterns: list,
+                           ap_priority_queue: list,
+                           budget_steps: int,
+                           ir_path: str,
+                           log_fn=None,
+                           force_sequence: str = None) -> tuple:
+        """
+        Tries each sequence on a fresh env reset, measures latency with
+        cost_model, returns (best_sequence_passes, best_latency_ns, name).
+
+        Args:
+            env:               CompilerGymEnv (will be reset per sequence)
+            cost_model:        LatencyCostModel
+            anti_patterns:     LAP-00X codes from Fixer Agent
+            ap_priority_queue: pre-computed AP-targeted passes (SEQ-4 override)
+            budget_steps:      max steps (if <= 10, skip exploration)
+            ir_path:           path to input IR file
+            log_fn:            logging callback (optional)
+            force_sequence:    if set, skip exploration and use this named sequence
+                               directly (used by adaptive retry strategy)
+
+        Returns:
+            (best_passes: list[str], best_latency_ns: float, seq_name: str)
+        """
+        def log(msg):
+            if log_fn:
+                log_fn(msg)
+
+        # Fast path: too tight a budget to explore
+        if budget_steps <= 10:
+            log("  PhaseOrder: budget too tight — using AP-targeted sequence directly")
+            return (ap_priority_queue[:budget_steps], float('inf'), "SEQ-4 Direct")
+
+        # Forced sequence path: adaptive retry — skip exploration, use named strategy
+        if force_sequence:
+            forced = next(
+                ((name, passes) for name, passes in self.SEQUENCES
+                 if name == force_sequence),
+                None
+            )
+            if forced:
+                seq_name, seq_passes = forced
+                log(f"  PhaseOrder: forced strategy → {seq_name} (adaptive retry)")
+                env.reset(ir_path)
+                trial_passes = []
+                for p in seq_passes[:min(len(seq_passes), budget_steps)]:
+                    _, _, done = env.step(p)
+                    trial_passes.append(p)
+                    if done:
+                        break
+                trial_latency = cost_model.estimate(env.get_ir()).total_ns
+                return trial_passes, trial_latency, seq_name
+
+        # Build sequences to try — inject AP priority queue into SEQ-4
+        sequences = list(self.SEQUENCES)
+        ap_seq_name = "SEQ-4 AP-Targeted"
+        if ap_priority_queue:
+            sequences[3] = (ap_seq_name, ap_priority_queue[:15])
+
+        best_passes     = ap_priority_queue[:budget_steps]  # safe default
+        best_latency    = float('inf')
+        best_name       = "SEQ-4 Default"
+
+        log(f"  PhaseOrder: exploring {len(sequences)} sequences...")
+
+        for seq_name, seq_passes in sequences:
+            try:
+                # Fresh reset for each sequence trial
+                env.reset(ir_path)
+                trial_passes = []
+
+                for p in seq_passes[:min(len(seq_passes), budget_steps // 2)]:
+                    _, _, done = env.step(p)
+                    trial_passes.append(p)
+                    if done:
+                        break
+
+                # Measure latency after this sequence
+                trial_ir      = env.get_ir()
+                trial_latency = cost_model.estimate(trial_ir).total_ns
+
+                log(f"    {seq_name}: {trial_latency:.0f}ns "
+                    f"({len(trial_passes)} passes)")
+
+                if trial_latency < best_latency:
+                    best_latency = trial_latency
+                    best_passes  = trial_passes
+                    best_name    = seq_name
+
+            except Exception as e:
+                log(f"    {seq_name}: failed ({e}) — skipped")
+                continue
+
+        log(f"  PhaseOrder: winner → {best_name} ({best_latency:.0f}ns)")
+        return best_passes, best_latency, best_name
+
+
+# ---------------------------------------------------------------------------
+# Adaptive retry strategy — each retry escalates to a more aggressive sequence.
+# Attempt 0 → free exploration (AutoPhase-style, picks best of SEQ-1..5)
+# Attempt 1 → SEQ-2 Inline-First   (aggressive inlining, resolves LAP-002/006)
+# Attempt 2 → SEQ-3 Loop-First     (vectorisation + branch reduction)
+# Attempt 3+ → SEQ-5 Aggressive    (all 15 passes)
+# ---------------------------------------------------------------------------
+
+RETRY_STRATEGY = {
+    0: "SEQ-4 Balanced (AutoPhase-inspired)",
+    1: "SEQ-2 Inline-First",
+    2: "SEQ-3 Loop-First",
+    3: "SEQ-5 Aggressive",
+}
+
+
+# ---------------------------------------------------------------------------
 # IR Tuner Agent — main class
 # ---------------------------------------------------------------------------
 
@@ -559,15 +735,17 @@ class IRTunerAgent:
 
     def __init__(self, config_path: str = "configs/config.yaml",
                  stub_mode: bool = True):
-        self.config       = self._load_config(config_path)
-        self.tuner_cfg    = self.config.get("agents", {}).get("ir_tuner", {})
-        self.max_steps    = self.tuner_cfg.get("max_steps", 45)
-        self.cost_model   = LatencyCostModel()
-        self.pass_selector= HFTPassSelector()
-        self.reward_shaper= RewardShaper()
-        self.env          = CompilerGymEnv(stub_mode=stub_mode)
+        self.config          = self._load_config(config_path)
+        self.tuner_cfg       = self.config.get("agents", {}).get("ir_tuner", {})
+        self.max_steps       = self.tuner_cfg.get("max_steps", 45)
+        self.cost_model      = LatencyCostModel()
+        self.pass_selector   = HFTPassSelector()
+        self.reward_shaper   = RewardShaper()
+        self.phase_optimiser = PhaseOrderOptimiser()   # NEW: AutoPhase-inspired
+        self.env             = CompilerGymEnv(stub_mode=stub_mode)
         self._log(f"IR Tuner Agent initialized. "
-                  f"stub_mode={stub_mode}, max_steps={self.max_steps}")
+                  f"stub_mode={stub_mode}, max_steps={self.max_steps}, "
+                  f"phase_ordering=enabled")
 
     # ------------------------------------------------------------------
     # Public API
@@ -579,7 +757,8 @@ class IRTunerAgent:
              hft_mode:      bool         = False,
              budget_ns:     int          = 0,
              anti_patterns: list[str]    = None,
-             directive:     str          = "") -> IRTunerResult:
+             directive:     str          = "",
+             retry_attempt: int          = 0) -> IRTunerResult:
         """
         Main entry point. Called by Boss Agent's HFT chain or pipeline.py.
 
@@ -590,6 +769,8 @@ class IRTunerAgent:
             budget_ns:     latency budget in nanoseconds (HFT mode)
             anti_patterns: list of LAP-00X codes from Fixer Agent
             directive:     text directive from Boss Agent retry loop
+            retry_attempt: which retry attempt this is (0=first, 1=retry1, ...)
+                           maps to RETRY_STRATEGY → forced pass sequence
 
         Returns:
             IRTunerResult with all metrics populated
@@ -607,13 +788,13 @@ class IRTunerAgent:
         self._log(f"Tuning: {Path(ir_path).name} | "
                   f"steps={budget_steps} | hft={hft_mode} | budget_ns={budget_ns}")
 
-        # Reset environment
+        # Reset environment and take baseline measurements
         obs            = self.env.reset(ir_path)
         instr_before   = self.env.get_instruction_count()
         ir_before      = self.env.get_ir()
         latency_before = self.cost_model.estimate(ir_before).total_ns
 
-        # Build pass priority queue for HFT mode
+        # Build anti-pattern priority queue
         priority_queue = []
         if hft_mode:
             priority_queue = self.pass_selector.build_priority_queue(
@@ -622,8 +803,45 @@ class IRTunerAgent:
             self._log(f"  Priority queue ({len(priority_queue)} passes): "
                       f"{priority_queue[:6]}{'...' if len(priority_queue) > 6 else ''}")
 
-        # Instantiate policy
-        policy = PPOPolicyStub(priority_queue)
+        # ── Phase-Order Optimisation (Adaptive Retry) ───────────────────────
+        # In HFT mode, pick the strategy based on retry_attempt number.
+        # Attempt 0: explore all sequences and pick best (AutoPhase-style).
+        # Attempts 1+: force a progressively more aggressive named sequence
+        # so each retry genuinely tries a different strategy.
+        best_sequence_passes = []
+        chosen_sequence_name = "PPO-default"
+        if hft_mode and budget_steps >= 10:
+            # Map attempt number → forced sequence name (None = free exploration)
+            max_mapped  = max(RETRY_STRATEGY.keys())
+            forced_name = RETRY_STRATEGY.get(
+                min(retry_attempt, max_mapped)
+            ) if retry_attempt > 0 else None
+
+            if forced_name:
+                self._log(f"  Adaptive retry {retry_attempt}: "
+                          f"forcing strategy → {forced_name}")
+
+            best_sequence_passes, _, chosen_sequence_name = (
+                self.phase_optimiser.pick_best_sequence(
+                    env               = self.env,
+                    cost_model        = self.cost_model,
+                    anti_patterns     = anti_patterns,
+                    ap_priority_queue = priority_queue,
+                    budget_steps      = budget_steps,
+                    ir_path           = ir_path,
+                    log_fn            = self._log,
+                    force_sequence    = forced_name,
+                )
+            )
+            # Reset env after exploration — we'll replay the best sequence
+            obs = self.env.reset(ir_path)
+            self._log(f"  Using sequence: {chosen_sequence_name}")
+
+        # Build final priority queue: best phase sequence first, then AP passes
+        final_queue = best_sequence_passes + [
+            p for p in priority_queue if p not in set(best_sequence_passes)
+        ]
+        policy = PPOPolicyStub(final_queue)
 
         # Main tuning loop
         passes_applied    = []
@@ -697,7 +915,8 @@ class IRTunerAgent:
             budget_ns             = budget_ns,
             within_budget         = within_budget,
             notes                 = (
-                f"{len(passes_applied)} passes applied. "
+                f"{len(passes_applied)} passes applied "
+                f"(phase-order: {chosen_sequence_name}). "
                 f"Instruction reduction: {instr_reduction} "
                 f"({100*instr_reduction/max(instr_before,1):.1f}%). "
                 f"Latency delta: {latency_delta:.0f}ns."

@@ -1,0 +1,67 @@
+# =============================================================================
+# AGentic_C — HFT Hardware & Latency Budget Profile
+# =============================================================================
+# This file defines the hardware environment and per-segment latency budgets.
+# Edit this file to match your actual trading infrastructure.
+#
+# Budget breakdown (must sum to <= tick_to_order_ns):
+#   market_data_parse_ns  + signal_eval_ns + risk_check_ns
+#   + order_serialise_ns + headroom_ns = 1200ns (< 2000ns tick_to_order)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Latency Budget (nanoseconds)
+# ---------------------------------------------------------------------------
+latency_budget:
+  # Total end-to-end tick-to-order budget
+  tick_to_order_ns: 2000          # 2µs — aggressive but achievable with kernel bypass
+
+  # Per-segment sub-budgets (hot path stages)
+  market_data_parse_ns: 200       # decode + parse MD feed (ITCH/OUCH/FIX)
+  signal_eval_ns: 400             # evaluate alpha signal / momentum
+  risk_check_ns: 150              # inline pre-trade risk gate
+  order_serialise_ns: 250         # build + encode + send order
+  headroom_ns: 200                # buffer for NIC variance + scheduling jitter
+
+# ---------------------------------------------------------------------------
+# Hardware Profile
+# ---------------------------------------------------------------------------
+hardware:
+  # CPU model — used to select ISA-specific passes (NEON vs AVX2)
+  # Options: arm64, x86_64, aarch64
+  cpu: arm64                      # Apple M-series / AWS Graviton
+
+  # NIC model — used to decide on kernel-bypass pass eligibility
+  # Options: generic, solarflare_x2, mellanox_cx6, intel_x710
+  nic: generic
+
+  # Kernel bypass mode
+  # Options: none, dpdk, openonload, vma, exanic
+  bypass_mode: none
+
+  # NUMA node (0 = first socket)
+  numa_node: 0
+
+  # Is the CPU pinned and isolated from the OS scheduler?
+  cpu_isolated: false
+
+  # Exchange protocol (affects serialisation pass selection)
+  # Options: fix, itch, ouch, sbe, native
+  exchange_proto: fix
+
+# ---------------------------------------------------------------------------
+# Optimisation Preferences
+# ---------------------------------------------------------------------------
+optimisation:
+  # Prefer instruction count reduction when latency is already within budget
+  prefer_instr_reduction: true
+
+  # Enable SIMD vectorisation passes (loop-vectorize, slp-vectorizer)
+  enable_simd: true
+
+  # How aggressively to inline functions
+  # Options: conservative, balanced, aggressive
+  inline_aggressiveness: balanced
+
+  # Whether to apply hardware prefetch insertion passes
+  enable_prefetch: false          # only safe on x86_64 with known memory patterns
