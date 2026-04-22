@@ -182,6 +182,10 @@ def pipeline_result_to_dict(pipeline_result,
         "total_retries":      getattr(result, "total_retries", 0),
         "stage_times":        getattr(result, "stage_times", {}),
         "notes":              getattr(result, "notes", ""),
+        # Experience-learning fields (new)
+        "binary_path":        getattr(result, "binary_path", ""),
+        "used_cached_sequence": getattr(result, "used_cached_sequence", False),
+        "experience_hits":    getattr(result, "experience_hits", 0),
     }
 
     # HOT unit results

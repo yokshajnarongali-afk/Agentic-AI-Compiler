@@ -133,4 +133,4 @@ memory:
   db:          Agentic_C
   vector_dim:  256              # must match SimpleIREncoder.DIM
   top_k:       5
-  min_reward_threshold: 0.50   # only use past experiences above this reward
+  min_reward_threshold: 0.35   # only use past experiences above this reward

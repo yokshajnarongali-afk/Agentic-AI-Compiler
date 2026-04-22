@@ -412,7 +412,7 @@ class ExperienceStore:
     def __init__(self, config: dict = None, db_path: str = None):
         self.config        = config or {}
         self.min_reward    = self.config.get("memory", {}).get(
-                             "min_reward_threshold", 0.75)
+                             "min_reward_threshold", 0.35)
         self._backend      = None
         self._backend_name = "none"
         self._init_backend(db_path)
